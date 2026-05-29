@@ -1,0 +1,6 @@
+{
+  "name": "Global Business News",
+  "description": "Stay updated with global business news and get AI-powered quick summaries at a glance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
