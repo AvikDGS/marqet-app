@@ -14,6 +14,8 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Query
+import retrofit2.http.Header
+
 import java.util.concurrent.TimeUnit
 
 interface NewsApiService {
@@ -23,6 +25,22 @@ interface NewsApiService {
         @Query("apiKey") apiKey: String,
         @Query("country") country: String = "us"
     ): NewsResponse
+}
+
+interface GroqApiService {
+    @POST("v1/chat/completions")
+    suspend fun getSummary(
+        @Header("Authorization") authHeader: String,
+        @Body request: com.example.model.GroqChatRequest
+    ): com.example.model.GroqChatResponse
+}
+
+interface HuggingFaceApiService {
+    @POST("models/facebook/bart-large-cnn")
+    suspend fun getSummary(
+        @Header("Authorization") authHeader: String,
+        @Body request: com.example.model.HuggingFaceRequest
+    ): List<com.example.model.HuggingFaceResponseItem>
 }
 
 interface GNewsApiService {
@@ -135,5 +153,23 @@ object RetrofitClient {
             .addConverterFactory(json.asConverterFactory(contentType))
             .build()
             .create(YahooFinanceApiService::class.java)
+    }
+
+    val groqApi: GroqApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://api.groq.com/openai/")
+            .client(okHttpClient)
+            .addConverterFactory(json.asConverterFactory(contentType))
+            .build()
+            .create(GroqApiService::class.java)
+    }
+
+    val huggingFaceApi: HuggingFaceApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://api-inference.huggingface.co/")
+            .client(okHttpClient)
+            .addConverterFactory(json.asConverterFactory(contentType))
+            .build()
+            .create(HuggingFaceApiService::class.java)
     }
 }

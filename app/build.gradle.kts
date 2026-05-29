@@ -26,13 +26,24 @@ android {
     val secrets = Properties()
     val secretsFile = rootProject.file("secrets.properties")
     if (secretsFile.exists()) {
-      secrets.load(FileInputStream(secretsFile))
+      FileInputStream(secretsFile).use { secrets.load(it) }
     }
-    buildConfigField("String", "SUPABASE_URL", "\"${secrets.getProperty("SUPABASE_URL") ?: ""}\"")
-    buildConfigField("String", "SUPABASE_ANON_KEY", "\"${secrets.getProperty("SUPABASE_ANON_KEY") ?: ""}\"")
-    buildConfigField("String", "NEWS_API_KEY", "\"${secrets.getProperty("NEWS_API_KEY") ?: ""}\"")
-    buildConfigField("String", "GNEWS_API_KEY", "\"${secrets.getProperty("GNEWS_API_KEY") ?: ""}\"")
-    buildConfigField("String", "MEDIASTACK_API_KEY", "\"${secrets.getProperty("MEDIASTACK_API_KEY") ?: ""}\"")
+    val envFile = rootProject.file(".env")
+    if (envFile.exists()) {
+      FileInputStream(envFile).use { secrets.load(it) }
+    }
+
+    fun getSecret(key: String): String {
+      return System.getenv(key) ?: secrets.getProperty(key) ?: ""
+    }
+
+    buildConfigField("String", "SUPABASE_URL", "\"${getSecret("SUPABASE_URL")}\"")
+    buildConfigField("String", "SUPABASE_ANON_KEY", "\"${getSecret("SUPABASE_ANON_KEY")}\"")
+    buildConfigField("String", "NEWS_API_KEY", "\"${getSecret("NEWS_API_KEY")}\"")
+    buildConfigField("String", "GNEWS_API_KEY", "\"${getSecret("GNEWS_API_KEY")}\"")
+    buildConfigField("String", "MEDIASTACK_API_KEY", "\"${getSecret("MEDIASTACK_API_KEY")}\"")
+    buildConfigField("String", "GROQ_API_KEY", "\"${getSecret("GROQ_API_KEY")}\"")
+    buildConfigField("String", "HF_API_KEY", "\"${getSecret("HF_API_KEY")}\"")
   }
 
   signingConfigs {

@@ -56,11 +56,19 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.launch
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import coil.compose.AsyncImage
 import com.example.model.Article
+import com.example.model.isSportsArticle
+import com.example.model.matchesCategory
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.NewsUiState
 import com.example.viewmodel.NewsViewModel
@@ -137,22 +145,22 @@ fun NewsApp(viewModel: NewsViewModel, marketsViewModel: MarketsViewModel) {
     Scaffold(
         containerColor = Color.Transparent,
         bottomBar = {
-            if (currentRoute == "home" || currentRoute == "markets") {
+            if (currentRoute == "home" || currentRoute == "markets" || currentRoute == "sports" || currentRoute == "profile") {
                 NavigationBar(
                     containerColor = BottomNavBg,
                     tonalElevation = 0.dp
                 ) {
                     val tabs = listOf(
                         Triple("Home", Icons.Default.Home, "home"),
-                        Triple("Markets", Icons.Default.ShoppingCart, "markets"), // Using ShoppingCart as it's the current icon
-                        Triple("Sports", Icons.Default.PlayArrow, "home"),
+                        Triple("Markets", Icons.Default.ShoppingCart, "markets"),
+                        Triple("Sports", Icons.Default.SportsSoccer, "sports"),
                         Triple("Saved", Icons.Default.Star, "home"),
-                        Triple("Profile", Icons.Default.Person, "home")
+                        Triple("Profile", Icons.Default.Person, "profile")
                     )
                     
                     tabs.forEach { triple ->
                         val (label, icon, route) = triple
-                        val isSelected = currentRoute == route && (label == "Home" || label == "Markets")
+                        val isSelected = currentRoute == route
                         NavigationBarItem(
                             selected = isSelected,
                             onClick = { 
@@ -364,6 +372,26 @@ fun NewsApp(viewModel: NewsViewModel, marketsViewModel: MarketsViewModel) {
                 composable("markets") {
                     MarketsScreen(viewModel = marketsViewModel)
                 }
+                composable("sports") {
+                    SportsScreen(
+                        viewModel = viewModel,
+                        onArticleClick = { article ->
+                            selectedArticle = article
+                            viewModel.clearSummary()
+                            viewModel.summarizeArticle(article)
+                            navController.navigate("detail")
+                        },
+                        onAllCategoriesClick = {
+                            navController.navigate("categories")
+                        },
+                        onSearchClick = {
+                            navController.navigate("search")
+                        },
+                        onProfileClick = {
+                            navController.navigate("profile")
+                        }
+                    )
+                }
                 composable("detail") {
                     selectedArticle?.let { article ->
                         DetailScreen(
@@ -480,7 +508,7 @@ fun HomeScreen(viewModel: NewsViewModel, onArticleClick: (Article) -> Unit, onAl
     val selectedCategoryIds by viewModel.settingsRepository.selectedCategoryIds.collectAsStateWithLifecycle()
     val currentCategoryId by viewModel.settingsRepository.currentCategoryId.collectAsStateWithLifecycle()
 
-    val categories = com.example.model.CategoryData.allCategories.sortedWith(
+    val categories = com.example.model.CategoryData.allCategories.filter { it.group != "SPORTS" }.sortedWith(
         compareByDescending<com.example.model.NewsCategory> { selectedCategoryIds.contains(it.id) }
             .thenBy { it.name }
     )
@@ -665,7 +693,9 @@ fun HomeScreen(viewModel: NewsViewModel, onArticleClick: (Article) -> Unit, onAl
                             }
                         }
                         is NewsUiState.Success -> {
-                            val articles = state.articles
+                            val allNonSports = state.articles.filter { !it.isSportsArticle() }
+                            val filteredArticles = allNonSports.filter { it.matchesCategory(currentCategoryId) }
+                            val articles = if (filteredArticles.isNotEmpty()) filteredArticles else allNonSports
                             if (articles.isNotEmpty()) {
                                 val now = System.currentTimeMillis()
                                 val last24h = mutableListOf<com.example.model.Article>()
@@ -995,6 +1025,45 @@ fun GlassArticleCard(article: Article, onClick: () -> Unit) {
 }
 
 @Composable
+fun SummarySkeleton() {
+    val transition = rememberInfiniteTransition(label = "shimmer")
+    val alpha by transition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 0.7f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "shimmer_alpha"
+    )
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        val baseColor = Color(0xFF3A3A4E).copy(alpha = alpha)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .height(16.dp)
+                .background(baseColor, RoundedCornerShape(8.dp))
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.7f)
+                .height(16.dp)
+                .background(baseColor, RoundedCornerShape(8.dp))
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .height(16.dp)
+                .background(baseColor, RoundedCornerShape(8.dp))
+        )
+    }
+}
+
+@Composable
 fun DetailScreen(
     article: Article,
     viewModel: NewsViewModel,
@@ -1173,14 +1242,56 @@ fun DetailScreen(
                 ) {
                     when (val state = summaryState) {
                         is SummaryUiState.Idle, is SummaryUiState.Loading -> {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp)
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Text("Generating AI Analysis...", color = Color.White)
+                            Column(
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(bottom = 16.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        color = Color.White,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = "Generating AI Analysis...",
+                                        color = Color.White,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                                SummarySkeleton()
                             }
                         }
                         is SummaryUiState.Error -> {
-                            Text(state.message, color = MaterialTheme.colorScheme.error)
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(state.message, color = Color(0xFFFF5D5D), fontSize = 14.sp)
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .clickable { viewModel.summarizeArticle(article) }
+                                        .background(Color.White.copy(alpha = 0.10f), RoundedCornerShape(50))
+                                        .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(50))
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "Regenerate summary",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Regenerate summary ↺",
+                                        color = Color.White,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                         is SummaryUiState.Success -> {
                             MarkdownRenderer(text = state.summary)

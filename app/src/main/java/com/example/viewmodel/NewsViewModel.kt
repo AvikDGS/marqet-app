@@ -382,18 +382,6 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun summarizeArticle(article: com.example.model.Article?) {
-        val apiKey = try { BuildConfig.GEMINI_API_KEY.trim() } catch(e:Exception) {""}
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            _summaryState.value = SummaryUiState.Error(
-                "Gemini API Key is missing!\n" +
-                "To see AI summarization:\n" +
-                "1. Open the 'Secrets' panel in AI Studio.\n" +
-                "2. Add a new secret named GEMINI_API_KEY.\n" +
-                "3. Paste your valid Gemini API key as the value."
-            )
-            return
-        }
-
         if (article == null) {
             _summaryState.value = SummaryUiState.Error("No content available to summarize.")
             return
@@ -410,44 +398,115 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             _summaryState.value = SummaryUiState.Loading
-            try {
-                val prompt = """
-                    You are an expert news summarizer AI.
-                    Please provide a highly-structured summary of the following news story based on the available information.
-                    Since you might only have snippets, use your knowledge to provide context if needed, but focus on the core information provided.
-
-                    News Title: $title
-                    Description: $description
-                    Content Snippet: $content
-                    
-                    You MUST format your response strictly using markdown with the following structure:
-                    1. A proper main headline starting with `# `
-                    2. A sub-headline or brief context starting with `## ` or `### `
-                    3. Key takeaways in a bulleted list starting with `- ` or `* `
-                    4. Use **bold** text for important names, entities, or key facts.
-                    5. Use *italics* for emphasis, source names, or publication names.
-                    6. Include at least one relevant quote formatted as a blockquote starting with `> ` (synthesize a realistic quote based on the content if a direct quote isn't available, but mark it as a summary quote).
-                """.trimIndent()
-                val request = GeminiGenerateContentRequest(
-                    contents = listOf(
-                        GeminiContent(parts = listOf(GeminiPart(text = prompt)))
-                    )
-                )
-
-                val response = withContext(Dispatchers.IO) {
-                    RetrofitClient.geminiApi.generateContent(apiKey, request)
-                }
-
-                val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-                    ?: "Could not generate summary."
-
-                _summaryState.value = SummaryUiState.Success(text)
-            } catch (e: retrofit2.HttpException) {
-                val errorBody = e.response()?.errorBody()?.string() ?: e.message()
-                _summaryState.value = SummaryUiState.Error("API Error: $errorBody")
-            } catch (e: Throwable) {
-                _summaryState.value = SummaryUiState.Error(e.message ?: "Failed to generate summary")
-            }
+            
+            val articleText = "Title: $title\nDescription: $description\nContent: $content"
+            
+            // Tier 1: Try Groq API
+            val groqSuccess = tryGroqWithRetryAndFallback(articleText)
+            if (groqSuccess) return@launch
+            
+            // Tier 2: Try Hugging Face API
+            val hfSuccess = tryHuggingFaceWithRetry(articleText)
+            if (hfSuccess) return@launch
+            
+            // Tier 3: Show user-friendly graceful fallback message instead of raw JSON error
+            _summaryState.value = SummaryUiState.Error(
+                "Summary temporarily unavailable. Tap 'Read full article' to read the complete story."
+            )
         }
+    }
+
+    private suspend fun tryGroqWithRetryAndFallback(articleText: String): Boolean {
+        val apiKey = try { BuildConfig.GROQ_API_KEY.trim() } catch(e: Exception) { "" }
+        if (apiKey.isBlank() || apiKey == "MY_GROQ_API_KEY") {
+            return false
+        }
+
+        var attempt = 1
+        while (attempt <= 2) {
+            try {
+                val prompt = "Summarize this news article in exactly 4 short bullet points, simple English, each point max 15 words: $articleText"
+                val request = com.example.model.GroqChatRequest(
+                    model = "llama-3.1-8b-instant",
+                    messages = listOf(
+                        com.example.model.GroqMessage(role = "user", content = prompt)
+                    ),
+                    max_tokens = 200,
+                    temperature = 0.3
+                )
+                
+                val response = withContext(Dispatchers.IO) {
+                    com.example.network.RetrofitClient.groqApi.getSummary(
+                        authHeader = "Bearer $apiKey",
+                        request = request
+                    )
+                }
+                
+                val text = response.choices?.firstOrNull()?.message?.content
+                if (!text.isNullOrBlank()) {
+                    _summaryState.value = SummaryUiState.Success(text)
+                    return true
+                }
+            } catch (e: retrofit2.HttpException) {
+                val code = e.code()
+                if (code == 503 && attempt == 1) {
+                    kotlinx.coroutines.delay(2000)
+                    attempt++
+                    continue
+                } else if (code == 429) {
+                    _summaryState.value = SummaryUiState.Error("Too many requests, try again in a minute")
+                    return true
+                } else if (code == 403) {
+                    _summaryState.value = SummaryUiState.Error("Summary unavailable")
+                    return true
+                }
+            } catch (e: Throwable) {
+                // fall through to fallback
+            }
+            break
+        }
+        return false
+    }
+
+    private suspend fun tryHuggingFaceWithRetry(articleText: String): Boolean {
+        val apiKey = try { BuildConfig.HF_API_KEY.trim() } catch(e: Exception) { "" }
+        if (apiKey.isBlank() || apiKey == "MY_HF_API_KEY") {
+            return false
+        }
+
+        var attempt = 1
+        while (attempt <= 2) {
+            try {
+                val request = com.example.model.HuggingFaceRequest(inputs = articleText)
+                val response = withContext(Dispatchers.IO) {
+                    com.example.network.RetrofitClient.huggingFaceApi.getSummary(
+                        authHeader = "Bearer $apiKey",
+                        request = request
+                    )
+                }
+                val text = response.firstOrNull()?.summary_text
+                if (!text.isNullOrBlank()) {
+                    _summaryState.value = SummaryUiState.Success(text)
+                    return true
+                }
+            } catch (e: retrofit2.HttpException) {
+                val code = e.code()
+                if (code == 503 && attempt == 1) {
+                    kotlinx.coroutines.delay(2000)
+                    attempt++
+                    continue
+                } else if (code == 429) {
+                    _summaryState.value = SummaryUiState.Error("Too many requests, try again in a minute")
+                    return true
+                } else if (code == 403) {
+                    _summaryState.value = SummaryUiState.Error("Summary unavailable")
+                    return true
+                }
+            } catch (e: Throwable) {
+                // fall through to fallback
+            }
+            break
+        }
+        return false
     }
 }

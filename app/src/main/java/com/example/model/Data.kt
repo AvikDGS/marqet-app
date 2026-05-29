@@ -84,3 +84,37 @@ data class GeminiGenerateContentResponse(
 data class GeminiCandidate(
     val content: GeminiContent? = null
 )
+
+@Serializable
+data class GroqChatRequest(
+    val model: String = "llama-3.1-8b-instant",
+    val messages: List<GroqMessage>,
+    val max_tokens: Int = 200,
+    val temperature: Double = 0.3
+)
+
+@Serializable
+data class GroqMessage(
+    val role: String,
+    val content: String
+)
+
+@Serializable
+data class GroqChatResponse(
+    val choices: List<GroqChoice>? = null
+)
+
+@Serializable
+data class GroqChoice(
+    val message: GroqMessage? = null
+)
+
+@Serializable
+data class HuggingFaceRequest(
+    val inputs: String
+)
+
+@Serializable
+data class HuggingFaceResponseItem(
+    val summary_text: String? = null
+)
