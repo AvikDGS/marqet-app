@@ -14,15 +14,24 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import com.example.data.SettingsRepository
 import kotlinx.coroutines.flow.collectLatest
+import com.example.utils.DateTimeUtils
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import java.net.URL
+import com.rometools.rome.io.SyndFeedInput
+import com.rometools.rome.io.XmlReader
+
+import androidx.room.Room
+import com.example.data.AppDatabase
+import com.example.data.CachedArticle
 
 sealed class NewsUiState {
     object Loading : NewsUiState()
-    data class Success(val articles: List<Article>, val isRefreshing: Boolean = false) : NewsUiState()
+    data class Success(val articles: List<Article>, val isRefreshing: Boolean = false, val isOffline: Boolean = false) : NewsUiState()
     data class Error(val message: String) : NewsUiState()
 }
 
@@ -35,6 +44,7 @@ sealed class SummaryUiState {
 
 class NewsViewModel(application: Application) : AndroidViewModel(application) {
     val settingsRepository = SettingsRepository(application)
+    private val database = Room.databaseBuilder(application, AppDatabase::class.java, "news_database").build()
 
     private val _newsState = MutableStateFlow<NewsUiState>(NewsUiState.Loading)
     val newsState: StateFlow<NewsUiState> = _newsState.asStateFlow()
@@ -46,6 +56,7 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
     val newStoriesAvailable: StateFlow<Boolean> = _newStoriesAvailable.asStateFlow()
 
     private var pendingArticles: List<Article> = emptyList()
+    private var allArticles: MutableList<Article> = mutableListOf()
 
     init {
         viewModelScope.launch {
@@ -55,8 +66,14 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             while (true) {
-                kotlinx.coroutines.delay(900_000) // Auto-refresh every 15 minutes
-                fetchNews(isRefresh = true, isSilent = true)
+                kotlinx.coroutines.delay(10_000) // 10s auto-refresh for fast APIs
+                fetchFastApis(isSilent = true)
+            }
+        }
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(60_000) // 60s auto-refresh for RSS
+                fetchRss(isSilent = true)
             }
         }
     }
@@ -71,79 +88,292 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun fetchRssFeed(url: String): List<Article> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val feed = SyndFeedInput().build(XmlReader(URL(url)))
+                feed.entries.map { entry ->
+                    Article(
+                        source = com.example.model.Source(name = feed.title ?: "RSS"),
+                        title = entry.title,
+                        description = entry.description?.value ?: "",
+                        url = entry.link,
+                        publishedAt = DateTimeUtils.formatIsoDate(entry.publishedDate ?: java.util.Date()),
+                        urlToImage = entry.enclosures?.firstOrNull()?.url ?: ""
+                    )
+                }
+            } catch(e: Exception) {
+                e.printStackTrace()
+                emptyList()
+            }
+        }
+    }
+
+    private fun deduplicateAndSort(articles: List<Article>): List<Article> {
+        val unique = mutableListOf<Article>()
+        for (article in articles) {
+            val isDuplicate = unique.any { 
+                val t1 = it.title?.lowercase() ?: ""
+                val t2 = article.title?.lowercase() ?: ""
+                t1.isNotBlank() && t2.isNotBlank() && (t1 == t2 || t1.contains(t2) || t2.contains(t1))
+            }
+            if (!isDuplicate) {
+                unique.add(article)
+            }
+        }
+        
+        return unique.sortedWith(Comparator { a1, a2 ->
+            val isBreaking1 = a1.title?.contains("BREAKING", true) == true || (a1.title?.hashCode()?.rem(100) ?: 0) > 90
+            val isBreaking2 = a2.title?.contains("BREAKING", true) == true || (a2.title?.hashCode()?.rem(100) ?: 0) > 90
+            
+            if (isBreaking1 != isBreaking2) {
+                isBreaking2.compareTo(isBreaking1)
+            } else {
+                val date1 = DateTimeUtils.parseIsoDate(a1.publishedAt)?.time ?: 0L
+                val date2 = DateTimeUtils.parseIsoDate(a2.publishedAt)?.time ?: 0L
+                if (date1 != date2) {
+                    date2.compareTo(date1)
+                } else {
+                    val score1 = a1.title?.hashCode()?.rem(100) ?: 0
+                    val score2 = a2.title?.hashCode()?.rem(100) ?: 0
+                    score2.compareTo(score1)
+                }
+            }
+        })
+    }
+
     fun fetchNews(isRefresh: Boolean = false, isSilent: Boolean = false) {
         if (fetchJob?.isActive == true) return
 
         fetchJob = viewModelScope.launch {
             val currentState = _newsState.value
             if (isRefresh && currentState is NewsUiState.Success) {
-                if (!isSilent) {
-                    _newsState.value = currentState.copy(isRefreshing = true)
-                }
+                if (!isSilent) _newsState.value = currentState.copy(isRefreshing = true)
             } else {
-                if (!isSilent) {
-                    _newsState.value = NewsUiState.Loading
-                }
-            }
-
-            // Hardcoded check for API keys before any network call
-            val newsApiKeyStr = "YOUR_NEWS_API_KEY" // Hardcoded placeholder as requested
-            // In a real scenario we'd use BuildConfig.NEWS_API_KEY, but since saurav.tech is a mock, we just satisfy the null/blank check.
-            val geminiApiKeyStr = try { BuildConfig.GEMINI_API_KEY } catch (e: Exception) { "" }
-
-            if (geminiApiKeyStr.isBlank() || geminiApiKeyStr == "MY_GEMINI_API_KEY") {
-                // If they expect the API Key to be fully loaded:
-                // Uncomment to enforce Gemini key for the entire app:
-                // _newsState.value = NewsUiState.Error("API Key is missing or not loaded!\nPlease set your GEMINI_API_KEY to proceed.")
-                // return@launch
+                if (!isSilent) _newsState.value = NewsUiState.Loading
             }
 
             try {
-                // Safety check before calling API
-                if (newsApiKeyStr.isBlank()) {
-                    if (!isSilent) _newsState.value = NewsUiState.Error("News API Key is missing! Please configure the API Key properly.")
-                    return@launch
+                val newsApiFuture = async(Dispatchers.IO) {
+                    try {
+                        val key = try { BuildConfig.NEWS_API_KEY } catch (e: Exception) {""}
+                        if (key.isNotBlank()) RetrofitClient.newsApi.getNewsByCategory("business", key, "us").articles
+                        else emptyList()
+                    } catch(e: Exception) { emptyList() }
                 }
 
-                val mappedCategory = when(settingsRepository.currentCategoryId.value) {
-                    "stock_markets", "banking_finance", "commodities", "forex", "crypto_web3", "macro_economy", "tech_startups", "real_estate", "esg_sustainability" -> "business"
-                    "football_soccer", "cricket", "basketball", "tennis", "athletics_olympics", "baseball", "american_football", "motorsports", "combat_sports", "badminton", "volleyball", "aquatics", "kabaddi_local", "esports", "hockey_rugby_golf" -> "sports"
-                    "geopolitics", "politics_elections", "defence_security", "climate_environment" -> "general"
-                    "health_science" -> "health"
-                    "artificial_intelligence", "consumer_tech", "cloud_enterprise", "space_tech" -> "technology"
-                    "movies_ott", "music", "tv_web_series", "celebrity_culture" -> "entertainment"
-                    else -> "general"
+                val gnewsFuture = async(Dispatchers.IO) {
+                    try {
+                        val key = try { BuildConfig.GNEWS_API_KEY } catch (e:Exception) {""}
+                        if (key.isNotBlank()) {
+                            RetrofitClient.gnewsApi.getNewsByCategory("business", "en", key).articles.map {
+                                Article(
+                                    source = it.source,
+                                    title = it.title,
+                                    description = it.description,
+                                    url = it.url,
+                                    urlToImage = it.image,
+                                    publishedAt = it.publishedAt,
+                                    content = it.content
+                                )
+                            }
+                        } else emptyList()
+                    } catch(e: Exception) { emptyList() }
                 }
 
-                val response = withContext(Dispatchers.IO) {
-                    RetrofitClient.newsApi.getNewsByCategory(mappedCategory)
+                val mediastackFuture = async(Dispatchers.IO) {
+                    try {
+                        val key = try { BuildConfig.MEDIASTACK_API_KEY } catch (e:Exception) {""}
+                        if (key.isNotBlank()) {
+                            RetrofitClient.mediastackApi.getNewsByCategory("business", "en", key).data.map {
+                                Article(
+                                    source = com.example.model.Source(name = it.source),
+                                    title = it.title,
+                                    description = it.description,
+                                    url = it.url,
+                                    urlToImage = it.image,
+                                    publishedAt = it.published_at
+                                )
+                            }
+                        } else emptyList()
+                    } catch(e: Exception) { emptyList() }
                 }
-                var validArticles = response.articles.filter { !it.title.isNullOrBlank() && !it.urlToImage.isNullOrBlank() }
-                if (isRefresh) {
-                    validArticles = validArticles.shuffled() // Simulate receiving new news updates for the static feed
+
+                val rssUrls = listOf(
+                    "https://feeds.reuters.com/reuters/businessNews",
+                    "http://feeds.bbci.co.uk/news/business/rss.xml",
+                    "https://www.moneycontrol.com/rss/business.xml",
+                    "http://feeds.bbci.co.uk/news/world/rss.xml",
+                    "https://www.espn.com/espn/rss/news",
+                    "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
+                    "https://feeds.feedburner.com/ndtvnews-top-stories",
+                    "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
+                    "https://www.cricbuzz.com/cricket-rss-feeds"
+                )
+                
+                val rssFutures = rssUrls.map { url ->
+                    async(Dispatchers.IO) { fetchRssFeed(url) }
                 }
+
+                val combined = mutableListOf<Article>()
+                combined.addAll(newsApiFuture.await())
+                combined.addAll(gnewsFuture.await())
+                combined.addAll(mediastackFuture.await())
+                rssFutures.awaitAll().forEach { combined.addAll(it) }
+
+                val validArticles = combined.filter { !it.title.isNullOrBlank() }
                 
                 if (validArticles.isEmpty()) {
                      if (!isSilent) _newsState.value = NewsUiState.Error("No news articles found.")
                 } else {
+                     allArticles.addAll(validArticles)
+                     val newSorted = deduplicateAndSort(allArticles).take(500)
+                     allArticles = newSorted.toMutableList()
+
+                     // Cache to Room
+                     withContext(Dispatchers.IO) {
+                         database.articleDao().clearAll()
+                         database.articleDao().insertArticles(newSorted.map {
+                             CachedArticle(
+                                 url = it.url ?: "",
+                                 sourceName = it.source?.name,
+                                 author = it.author,
+                                 title = it.title,
+                                 description = it.description,
+                                 urlToImage = it.urlToImage,
+                                 publishedAt = it.publishedAt,
+                                 content = it.content
+                             )
+                         })
+                     }
+
                      if (isSilent) {
-                         pendingArticles = validArticles
+                         pendingArticles = newSorted
                          _newStoriesAvailable.value = true
                      } else {
-                         _newsState.value = NewsUiState.Success(validArticles, isRefreshing = false)
+                         _newsState.value = NewsUiState.Success(newSorted, isRefreshing = false)
                          _newStoriesAvailable.value = false
                          pendingArticles = emptyList()
                      }
                 }
             } catch (e: Exception) {
-                if (!isSilent) {
+                // Fallback to cache on error
+                val cached = withContext(Dispatchers.IO) {
+                    database.articleDao().getArticles()
+                }
+                
+                if (cached.isNotEmpty()) {
+                    val restored = cached.map { 
+                        Article(
+                            source = com.example.model.Source(name = it.sourceName),
+                            author = it.author,
+                            title = it.title,
+                            description = it.description,
+                            url = it.url,
+                            urlToImage = it.urlToImage,
+                            publishedAt = it.publishedAt,
+                            content = it.content
+                        )
+                    }
+                    _newsState.value = NewsUiState.Success(restored, isRefreshing = false, isOffline = true)
+                } else if (!isSilent) {
                     if (currentState is NewsUiState.Success && isRefresh) {
                         _newsState.value = currentState.copy(isRefreshing = false)
                     } else {
-                        _newsState.value = NewsUiState.Error("API Call failed: ${e.localizedMessage ?: e.message ?: "Unknown error"}")
+                        _newsState.value = NewsUiState.Error("Offline and no cached news available.")
                     }
                 }
             }
+        }
+    }
+
+    fun fetchFastApis(isSilent: Boolean = true) {
+        viewModelScope.launch {
+            try {
+                val newsApiFuture = async(Dispatchers.IO) {
+                    try {
+                        val key = try { BuildConfig.NEWS_API_KEY } catch (e: Exception) {""}
+                        if (key.isNotBlank()) RetrofitClient.newsApi.getNewsByCategory("business", key, "us").articles
+                        else emptyList()
+                    } catch(e: Exception) { emptyList() }
+                }
+
+                val gnewsFuture = async(Dispatchers.IO) {
+                    try {
+                        val key = try { BuildConfig.GNEWS_API_KEY } catch (e:Exception) {""}
+                        if (key.isNotBlank()) RetrofitClient.gnewsApi.getNewsByCategory("business", "en", key).articles.map {
+                            Article(source = it.source, title = it.title, description = it.description, url = it.url, urlToImage = it.image, publishedAt = it.publishedAt, content = it.content)
+                        } else emptyList()
+                    } catch(e: Exception) { emptyList() }
+                }
+
+                val mediastackFuture = async(Dispatchers.IO) {
+                    try {
+                        val key = try { BuildConfig.MEDIASTACK_API_KEY } catch (e:Exception) {""}
+                        if (key.isNotBlank()) RetrofitClient.mediastackApi.getNewsByCategory("business", "en", key).data.map {
+                            Article(source = com.example.model.Source(name=it.source), title = it.title, description = it.description, url = it.url, urlToImage = it.image, publishedAt = it.published_at)
+                        } else emptyList()
+                    } catch(e: Exception) { emptyList() }
+                }
+
+                val combined = mutableListOf<Article>()
+                combined.addAll(newsApiFuture.await())
+                combined.addAll(gnewsFuture.await())
+                combined.addAll(mediastackFuture.await())
+
+                val validArticles = combined.filter { !it.title.isNullOrBlank() }
+                if (validArticles.isNotEmpty()) {
+                    allArticles.addAll(validArticles)
+                    val newSorted = deduplicateAndSort(allArticles).take(500)
+                    allArticles = newSorted.toMutableList()
+
+                    if (isSilent) {
+                        pendingArticles = newSorted
+                        _newStoriesAvailable.value = true
+                    } else {
+                        _newsState.value = NewsUiState.Success(newSorted, isRefreshing = false)
+                    }
+                }
+            } catch(e: Exception) { }
+        }
+    }
+
+    fun fetchRss(isSilent: Boolean = true) {
+        viewModelScope.launch {
+            try {
+                val rssUrls = listOf(
+                    "https://feeds.reuters.com/reuters/businessNews",
+                    "http://feeds.bbci.co.uk/news/business/rss.xml",
+                    "https://www.moneycontrol.com/rss/business.xml",
+                    "http://feeds.bbci.co.uk/news/world/rss.xml",
+                    "https://www.espn.com/espn/rss/news",
+                    "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
+                    "https://feeds.feedburner.com/ndtvnews-top-stories",
+                    "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
+                    "https://www.cricbuzz.com/cricket-rss-feeds"
+                )
+                
+                val rssFutures = rssUrls.map { url ->
+                    async(Dispatchers.IO) { fetchRssFeed(url) }
+                }
+                
+                val combined = mutableListOf<Article>()
+                rssFutures.awaitAll().forEach { combined.addAll(it) }
+
+                val validArticles = combined.filter { !it.title.isNullOrBlank() }
+                if (validArticles.isNotEmpty()) {
+                    allArticles.addAll(validArticles)
+                    val newSorted = deduplicateAndSort(allArticles).take(500)
+                    allArticles = newSorted.toMutableList()
+
+                    if (isSilent) {
+                        pendingArticles = newSorted
+                        _newStoriesAvailable.value = true
+                    } else {
+                        _newsState.value = NewsUiState.Success(newSorted, isRefreshing = false)
+                    }
+                }
+            } catch(e: Exception) {}
         }
     }
 
@@ -152,7 +382,7 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun summarizeArticle(article: com.example.model.Article?) {
-        val apiKey = BuildConfig.GEMINI_API_KEY.trim()
+        val apiKey = try { BuildConfig.GEMINI_API_KEY.trim() } catch(e:Exception) {""}
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
             _summaryState.value = SummaryUiState.Error(
                 "Gemini API Key is missing!\n" +

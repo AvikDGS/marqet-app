@@ -17,11 +17,30 @@ import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
 
 interface NewsApiService {
-    @GET("top-headlines/category/business/us.json")
-    suspend fun getBusinessNews(): NewsResponse
+    @GET("v2/top-headlines")
+    suspend fun getNewsByCategory(
+        @Query("category") category: String,
+        @Query("apiKey") apiKey: String,
+        @Query("country") country: String = "us"
+    ): NewsResponse
+}
 
-    @GET("top-headlines/category/{category}/us.json")
-    suspend fun getNewsByCategory(@retrofit2.http.Path("category") category: String): NewsResponse
+interface GNewsApiService {
+    @GET("top-headlines")
+    suspend fun getNewsByCategory(
+        @Query("topic") topic: String,
+        @Query("lang") lang: String = "en",
+        @Query("token") token: String
+    ): com.example.model.GNewsResponse
+}
+
+interface MediastackApiService {
+    @GET("news")
+    suspend fun getNewsByCategory(
+        @Query("categories") categories: String,
+        @Query("languages") languages: String = "en",
+        @Query("access_key") token: String
+    ): com.example.model.MediastackResponse
 }
 
 interface GeminiApiService {
@@ -66,11 +85,29 @@ object RetrofitClient {
 
     val newsApi: NewsApiService by lazy {
         Retrofit.Builder()
-            .baseUrl("https://saurav.tech/NewsAPI/")
+            .baseUrl("https://newsapi.org/")
             .client(okHttpClient)
             .addConverterFactory(json.asConverterFactory(contentType))
             .build()
             .create(NewsApiService::class.java)
+    }
+
+    val gnewsApi: GNewsApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://gnews.io/api/v4/")
+            .client(okHttpClient)
+            .addConverterFactory(json.asConverterFactory(contentType))
+            .build()
+            .create(GNewsApiService::class.java)
+    }
+
+    val mediastackApi: MediastackApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl("http://api.mediastack.com/v1/")
+            .client(okHttpClient)
+            .addConverterFactory(json.asConverterFactory(contentType))
+            .build()
+            .create(MediastackApiService::class.java)
     }
 
     val geminiApi: GeminiApiService by lazy {

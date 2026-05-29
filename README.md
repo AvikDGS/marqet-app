@@ -1,21 +1,29 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Marqet — AI Business News App
+## Setup Instructions
+1. Get necessary API keys from Supabase, News API, and Gemini.
+2. Create \`secrets.properties\` file in the root directory and add the keys:
+   \`\`\`properties
+   SUPABASE_URL=your_supabase_project_url
+   SUPABASE_ANON_KEY=your_supabase_anon_key
+   NEWS_API_KEY=your_news_api_key
+   \`\`\`
+   And make sure you have \`.env\` file for \`GEMINI_API_KEY\`.
+3. Open the project in Android Studio or run Gradle from the command line \`./gradlew build\`.
 
-# Run and deploy your AI Studio app
+## Features List
+- **Personalized News:** Top stories and breaking news from the business, technology, and financial sectors.
+- **Categorization:** Discover and read articles based on multiple categories like Tech, AI, Market, Startups, and more.
+- **Saved Articles:** Keep a list of your most important business updates to read offline or refer to later.
+- **Watched Stories:** Track trending topics or important ongoing business events to stay in loop.
+- **AI Integration:** Get intelligent summaries of articles, making it easier to consume complex data points faster.
+- **User Authentication:** Safe and secure login powered by Supabase Auth and PostgreSQL.
 
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/284e90af-19fb-4518-b6e4-585e8d680915
-
-## Run Locally
-
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
-
-
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+## Tech Stack
+- **Language:** Kotlin
+- **UI Framework:** Jetpack Compose (Material Design 3)
+- **Networking:** Retrofit & Ktor
+- **Concurrency:** Kotlin Coroutines & Flow
+- **Dependency Injection:** ViewModel with Factory
+- **Authentication & Database:** Supabase (Auth, Postgres Row Level Security)
+- **Local Persistence (Optional):** Room Database
+- **AI summarization:** Google Gemini AI

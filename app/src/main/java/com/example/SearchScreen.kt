@@ -36,12 +36,15 @@ fun SearchScreen(
     viewModel: SearchViewModel, 
     onBackClick: () -> Unit,
     onArticleClick: (Article) -> Unit,
-    onVoiceSearchClick: () -> Unit
+    onVoiceSearchClick: () -> Unit,
+    onSearch: (String) -> Unit = {}
 ) {
     val query by viewModel.query.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val results by viewModel.results.collectAsStateWithLifecycle()
     val filter by viewModel.filter.collectAsStateWithLifecycle()
+    
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     var recentSearches by remember { mutableStateOf(listOf("Tata", "Apple event", "Federal reserve", "Bitcoin rally")) }
     val trendingSearches = listOf("NVIDIA earnings", "Tesla", "T20 World Cup", "US Elections", "Gold price")
@@ -72,6 +75,12 @@ fun SearchScreen(
                         modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                            onSearch = {
+                                onSearch(query)
+                                keyboardController?.hide()
+                            }
+                        ),
                         trailingIcon = {
                             if (query.isNotEmpty()) {
                                 IconButton(onClick = { viewModel.onQueryChange("") }) {

@@ -125,7 +125,7 @@ fun CategorySelectionScreen(
                 val enabled = selectedCategories.size >= 3
                 Button(
                     onClick = {
-                        // In a real app we would save this to firestore
+                        viewModel.updateCategories(selectedCategories.map { it.id })
                         onContinue()
                     },
                     modifier = Modifier.height(56.dp).width(160.dp),

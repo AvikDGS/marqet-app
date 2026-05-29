@@ -12,10 +12,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class UserProfile(val id: String, val name: String, val email: String)
+data class UserProfile(
+    val id: String, 
+    @SerialName("full_name") val fullName: String, 
+    val email: String, 
+    @SerialName("selected_categories") val selectedCategories: List<String> = emptyList()
+)
 
 data class AppUser(val uid: String, val email: String, val displayName: String)
 
@@ -62,7 +68,7 @@ class AuthRepository(context: Context) {
             }
             val uid = user?.id
             if (uid != null) {
-                val profile = UserProfile(id = uid, name = name, email = email)
+                val profile = UserProfile(id = uid, fullName = name, email = email)
                 try {
                     supabase.postgrest["profiles"].insert(profile)
                 } catch (e: Exception) {

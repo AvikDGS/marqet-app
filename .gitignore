@@ -16,3 +16,10 @@
 local.properties
 .env
 debug.keystore
+
+*.keystore
+/.gradle
+.cactus
+*.jks
+google-services.json
+secrets.properties

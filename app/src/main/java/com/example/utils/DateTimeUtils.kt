@@ -13,9 +13,12 @@ object DateTimeUtils {
         timeZone = TimeZone.getTimeZone("UTC")
     }
 
+    fun formatIsoDate(date: Date): String {
+        return isoFormatter.format(date)
+    }
+
     private val fullDateFormatter = SimpleDateFormat("EEEE, MMM d, yyyy • hh:mm a", Locale.US)
-    private val olderDateFormatter = SimpleDateFormat("MMM d, yyyy", Locale.US)
-    private val headerDateFormatter = SimpleDateFormat("EEEE, MMMM d", Locale.US)
+    private val olderDateFormatter = SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.US)
     private val timeFormatter = SimpleDateFormat("hh:mm a", Locale.US)
     private val istTimeFormatter = SimpleDateFormat("hh:mm a 'IST'", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("Asia/Kolkata")
@@ -32,21 +35,29 @@ object DateTimeUtils {
 
     fun getRelativeTime(dateStr: String?): String {
         val date = parseIsoDate(dateStr) ?: return ""
-        val now = Date()
+        val now = Date(System.currentTimeMillis())
         val diffInMillis = now.time - date.time
 
         if (diffInMillis < 0) return "Just now"
 
+        val seconds = TimeUnit.MILLISECONDS.toSeconds(diffInMillis)
         val minutes = TimeUnit.MILLISECONDS.toMinutes(diffInMillis)
         val hours = TimeUnit.MILLISECONDS.toHours(diffInMillis)
-        val days = TimeUnit.MILLISECONDS.toDays(diffInMillis)
+
+        val calendarNow = Calendar.getInstance().apply { time = now }
+        val calendarDate = Calendar.getInstance().apply { time = date }
+        
+        val isYesterday = calendarNow.get(Calendar.YEAR) == calendarDate.get(Calendar.YEAR) &&
+                          calendarNow.get(Calendar.DAY_OF_YEAR) - calendarDate.get(Calendar.DAY_OF_YEAR) == 1
 
         return when {
-            minutes < 1 -> "Just now"
+            seconds <= 60 -> "Just now"
             minutes < 60 -> "$minutes minute${if (minutes == 1L) "" else "s"} ago"
-            hours < 24 -> "$hours hour${if (hours == 1L) "" else "s"} ago"
-            days == 1L -> "Yesterday"
-            days <= 7 -> "$days days ago"
+            hours < 24 && !isYesterday -> "$hours hour${if (hours == 1L) "" else "s"} ago"
+            isYesterday -> {
+                val timeFmt = SimpleDateFormat("HH:mm", Locale.US)
+                "Yesterday, ${timeFmt.format(date)}"
+            }
             else -> olderDateFormatter.format(date)
         }
     }
@@ -58,14 +69,13 @@ object DateTimeUtils {
 
     fun getReadingTime(text: String?): String {
         if (text.isNullOrBlank()) return "1 min read"
-        // assuming 200 words per minute average reading speed
         val wordCount = text.split("\\s+".toRegex()).size
         val minutes = maxOf(1, Math.ceil(wordCount / 200.0).toInt())
         return "$minutes min read"
     }
 
     fun getTodayHeaderDate(): String {
-        return headerDateFormatter.format(Date())
+        return SimpleDateFormat("EEEE, dd MMMM yyyy", Locale.getDefault()).format(Date(System.currentTimeMillis()))
     }
 
     fun getGreeting(): String {
@@ -96,7 +106,6 @@ object DateTimeUtils {
             return Pair(true, "")
         }
 
-        // Calculate next opening
         var daysToAdd = 0
         var nextOpenTimeInMinutes = openTime
         
@@ -127,6 +136,6 @@ object DateTimeUtils {
     }
     
     fun getCurrentIstTime(): String {
-        return istTimeFormatter.format(Date())
+        return istTimeFormatter.format(Date(System.currentTimeMillis()))
     }
 }

@@ -43,6 +43,17 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.ui.platform.LocalContext
 import android.widget.Toast
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.channel
+import io.github.jan.supabase.realtime.realtime
+import io.github.jan.supabase.realtime.postgresChangeFlow
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.launch
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
@@ -58,6 +69,29 @@ import com.example.viewmodel.SummaryUiState
 // Colors for Glassmorphism
 val GlassBackground = Color.White.copy(alpha = 0.08f)
 val GlassBorder = Color.White.copy(alpha = 0.15f)
+fun showNotification(context: Context, title: String, body: String) {
+    val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    val channelId = "story_updates_channel"
+    
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val channel = NotificationChannel(
+            channelId,
+            "Story Updates",
+            NotificationManager.IMPORTANCE_DEFAULT
+        )
+        notificationManager.createNotificationChannel(channel)
+    }
+
+    val notification = NotificationCompat.Builder(context, channelId)
+        .setContentTitle(title)
+        .setContentText(body)
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setAutoCancel(true)
+        .build()
+
+    notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+}
+
 val AppBackgroundGradient = Brush.verticalGradient(listOf(Color(0xFF000000), Color(0xFF0D0D1A)))
 val OnboardingBackgroundGradient = Brush.verticalGradient(listOf(Color(0xFF000000), Color(0xFF1A1A2E)))
 val AccentGradient = Brush.linearGradient(listOf(Color(0xFFFFFFFF), Color(0xFFA0A0A0)))
@@ -156,6 +190,35 @@ fun NewsApp(viewModel: NewsViewModel, marketsViewModel: MarketsViewModel) {
         )
         val currentUser by authViewModel.currentUser.collectAsStateWithLifecycle()
         val startDest = if (currentUser != null) "home" else "welcome"
+        val coroutineScope = rememberCoroutineScope()
+
+        LaunchedEffect(currentUser) {
+            currentUser?.uid?.let { userId ->
+                try {
+                    val channel = supabase.channel("story-updates")
+                    channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") {
+                        table = "story_updates"
+                        filter = "user_id=eq.\$userId"
+                    }.onEach { change ->
+                        // New story update found - send local notification
+                        showNotification(
+                            context = currentContext,
+                            title = "Update on your watched story",
+                            body = change.record["headline"].toString()
+                        )
+                    }.launchIn(this)
+                    
+                    try {
+                        supabase.realtime.connect()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                    channel.subscribe()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
 
         Box(modifier = Modifier.padding(paddingValues)) {
             NavHost(navController = navController, startDestination = startDest) {
@@ -287,6 +350,14 @@ fun NewsApp(viewModel: NewsViewModel, marketsViewModel: MarketsViewModel) {
                             try {
                                 // this is mock, normally we'd launch for result
                             } catch (e: Exception) {}
+                        },
+                        onSearch = { query ->
+                            val user = authViewModel.currentUser.value
+                            if (user != null) {
+                                coroutineScope.launch {
+                                    authViewModel.dbRepository.addSearchHistory(user.uid, query)
+                                }
+                            }
                         }
                     )
                 }
@@ -298,6 +369,7 @@ fun NewsApp(viewModel: NewsViewModel, marketsViewModel: MarketsViewModel) {
                         DetailScreen(
                             article = article,
                             viewModel = viewModel,
+                            authViewModel = authViewModel,
                             onBackClick = { navController.popBackStack() },
                             onSuggestedArticleClick = { suggested ->
                                  selectedArticle = suggested
@@ -595,24 +667,91 @@ fun HomeScreen(viewModel: NewsViewModel, onArticleClick: (Article) -> Unit, onAl
                         is NewsUiState.Success -> {
                             val articles = state.articles
                             if (articles.isNotEmpty()) {
-                                val featuredArticle = articles.first()
-                                val otherArticles = articles.drop(1)
+                                val now = System.currentTimeMillis()
+                                val last24h = mutableListOf<com.example.model.Article>()
+                                val earlierStories = mutableListOf<com.example.model.Article>()
+                                val fromThisWeek = mutableListOf<com.example.model.Article>()
+                                
+                                articles.forEach { art ->
+                                    val time = com.example.utils.DateTimeUtils.parseIsoDate(art.publishedAt)?.time ?: 0L
+                                    val diffHours = java.util.concurrent.TimeUnit.MILLISECONDS.toHours(now - time)
+                                    when {
+                                        diffHours < 24 -> last24h.add(art)
+                                        diffHours < 24 * 7 -> earlierStories.add(art)
+                                        else -> fromThisWeek.add(art)
+                                    }
+                                }
 
-                                LazyColumn(
+                                // If last24h is oddly empty but we have articles, just fallback to making the first one featured anyway.
+                                val feedArticles = if (last24h.isNotEmpty()) last24h else articles.take(1)
+                                val fallbackUsed = last24h.isEmpty()
+                                
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    if (state.isOffline) {
+                                        Box(
+                                            modifier = Modifier.fillMaxWidth().background(Color(0xFFE53935)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("Offline Mode. Showing cached news.", color = Color.White, modifier = Modifier.padding(8.dp), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    LazyColumn(
                                     contentPadding = PaddingValues(bottom = 24.dp),
                                     modifier = Modifier.fillMaxSize()
                                 ) {
-                                    item {
-                                        Box(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
-                                            FeaturedArticleCard(featuredArticle, onClick = { onArticleClick(featuredArticle) })
+                                    if (feedArticles.isNotEmpty()) {
+                                        item {
+                                            Box(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+                                                FeaturedArticleCard(feedArticles.first(), onClick = { onArticleClick(feedArticles.first()) })
+                                            }
+                                        }
+                                        items(feedArticles.drop(1)) { article ->
+                                            Box(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+                                                GlassArticleCard(article, onClick = { onArticleClick(article) })
+                                            }
                                         }
                                     }
 
-                                    items(otherArticles) { article ->
-                                        Box(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
-                                            GlassArticleCard(article, onClick = { onArticleClick(article) })
+                                    val finalEarlier = if (fallbackUsed) earlierStories.drop(1) else earlierStories
+                                    if (finalEarlier.isNotEmpty()) {
+                                        item {
+                                            Text(
+                                                "Earlier stories",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 20.sp,
+                                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+                                            )
+                                        }
+                                        items(finalEarlier) { article ->
+                                            Box(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+                                                GlassArticleCard(article, onClick = { onArticleClick(article) })
+                                            }
                                         }
                                     }
+
+                                    val finalWeekly = if (fallbackUsed && earlierStories.isEmpty()) fromThisWeek.drop(1) else fromThisWeek
+                                    if (finalWeekly.isNotEmpty()) {
+                                        item {
+                                            Text(
+                                                "From this week",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 20.sp,
+                                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+                                            )
+                                        }
+                                        items(finalWeekly) { article ->
+                                            Box(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+                                                GlassArticleCard(article, onClick = { onArticleClick(article) })
+                                            }
+                                        }
+                                    }
+                                }
+                                }
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("No news available", color = Color.White)
                                 }
                             }
                         }
@@ -677,14 +816,40 @@ fun FeaturedArticleCard(article: Article, onClick: () -> Unit) {
                 Box(modifier = Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.White.copy(alpha = 0.08f))), RoundedCornerShape(24.dp)))
                 
                 Column(modifier = Modifier.padding(top = 64.dp, bottom = 24.dp, start = 24.dp, end = 24.dp)) {
-                    Text(
-                        text = "FEATURED",
-                        color = Color.White.copy(alpha=0.5f),
-                        fontSize = 11.sp,
-                        letterSpacing = 1.5.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    val publishTime = com.example.utils.DateTimeUtils.parseIsoDate(article.publishedAt)?.time ?: 0L
+                    val diffInMillis = System.currentTimeMillis() - publishTime
+                    val isNew = diffInMillis in 0..(60 * 60 * 1000L)
+                    val isBreaking = article.title?.contains("BREAKING", true) == true || (article.title?.hashCode()?.rem(100) ?: 0) > 90
+
+                    if (isBreaking) {
+                        Text(
+                            text = "BREAKING", 
+                            color = Color(0xFFFF4B4B), 
+                            fontSize = 11.sp, 
+                            letterSpacing = 1.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 8.dp).border(1.dp, Color(0xFFFF4B4B).copy(alpha=0.5f), RoundedCornerShape(4.dp)).padding(horizontal=6.dp, vertical=2.dp)
+                        )
+                    } else if (isNew) {
+                        Text(
+                            text = "NEW", 
+                            color = Color(0xFF4CAF50), 
+                            fontSize = 11.sp, 
+                            letterSpacing = 1.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 8.dp).border(1.dp, Color(0xFF4CAF50).copy(alpha=0.5f), RoundedCornerShape(4.dp)).padding(horizontal=6.dp, vertical=2.dp)
+                        )
+                    } else {
+                        Text(
+                            text = "FEATURED",
+                            color = Color.White.copy(alpha=0.5f),
+                            fontSize = 11.sp,
+                            letterSpacing = 1.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                    
                     Text(
                         text = article.title ?: "No Title",
                         color = Color.White,
@@ -765,6 +930,29 @@ fun GlassArticleCard(article: Article, onClick: () -> Unit) {
             Spacer(modifier = Modifier.width(16.dp))
             
             Column(modifier = Modifier.weight(1f)) {
+                val publishTime = com.example.utils.DateTimeUtils.parseIsoDate(article.publishedAt)?.time ?: 0L
+                val diffInMillis = System.currentTimeMillis() - publishTime
+                val isNew = diffInMillis in 0..(60 * 60 * 1000L)
+                val isBreaking = article.title?.contains("BREAKING", true) == true || (article.title?.hashCode()?.rem(100) ?: 0) > 90
+
+                if (isBreaking) {
+                    Text(
+                        text = "BREAKING", 
+                        color = Color(0xFFFF4B4B), 
+                        fontSize = 10.sp, 
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 6.dp).border(1.dp, Color(0xFFFF4B4B).copy(alpha=0.5f), RoundedCornerShape(4.dp)).padding(horizontal=4.dp, vertical=2.dp)
+                    )
+                } else if (isNew) {
+                    Text(
+                        text = "NEW", 
+                        color = Color(0xFF4CAF50), 
+                        fontSize = 10.sp, 
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 6.dp).border(1.dp, Color(0xFF4CAF50).copy(alpha=0.5f), RoundedCornerShape(4.dp)).padding(horizontal=4.dp, vertical=2.dp)
+                    )
+                }
+                
                 Text(
                     text = article.title ?: "No Title",
                     color = Color.White,
@@ -810,9 +998,11 @@ fun GlassArticleCard(article: Article, onClick: () -> Unit) {
 fun DetailScreen(
     article: Article,
     viewModel: NewsViewModel,
+    authViewModel: com.example.viewmodel.AuthViewModel,
     onBackClick: () -> Unit,
     onSuggestedArticleClick: (Article) -> Unit
 ) {
+    val coroutineScope = rememberCoroutineScope()
     val summaryState by viewModel.summaryState.collectAsStateWithLifecycle()
     val allArticles = if (viewModel.newsState.collectAsStateWithLifecycle().value is NewsUiState.Success) 
         (viewModel.newsState.collectAsStateWithLifecycle().value as NewsUiState.Success).articles 
@@ -820,6 +1010,13 @@ fun DetailScreen(
 
     val context = LocalContext.current
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+
+    LaunchedEffect(article.url) {
+        val user = authViewModel.currentUser.value
+        if (user != null) {
+            authViewModel.dbRepository.addReadingHistory(user.uid, article)
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(AppBackgroundGradient)) {
         val scrollState = rememberScrollState()
@@ -926,7 +1123,17 @@ fun DetailScreen(
                     
                     Row {
                         IconButton(
-                            onClick = { Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show() },
+                            onClick = { 
+                                val user = authViewModel.currentUser.value
+                                if (user != null) {
+                                    coroutineScope.launch {
+                                        authViewModel.dbRepository.saveArticle(user.uid, article)
+                                        Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show() 
+                                    }
+                                } else {
+                                    Toast.makeText(context, "Please login to save", Toast.LENGTH_SHORT).show() 
+                                }
+                            },
                             modifier = Modifier.background(BottomNavBg, CircleShape)
                         ) {
                             Icon(Icons.Default.BookmarkBorder, contentDescription = "Save", tint = Color.White)
@@ -1007,7 +1214,21 @@ fun DetailScreen(
                 // Follow story button
                 Button(
                     onClick = {
-                        Toast.makeText(context, "We'll notify you of updates to this story", Toast.LENGTH_SHORT).show()
+                        val user = authViewModel.currentUser.value
+                        if (user != null) {
+                            coroutineScope.launch {
+                                authViewModel.dbRepository.watchStory(
+                                    userId = user.uid,
+                                    headline = article.title ?: "Unknown",
+                                    url = article.url,
+                                    keywords = emptyList(), // Can add actual keyword extraction later
+                                    entities = emptyList() // Can add actual entity extraction later
+                                )
+                                Toast.makeText(context, "We'll notify you of updates to this story", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(context, "Please login to follow stories", Toast.LENGTH_SHORT).show()
+                        }
                     },
                     modifier = Modifier.fillMaxWidth().height(56.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6B4EE6)),

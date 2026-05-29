@@ -10,6 +10,38 @@ data class NewsResponse(
 )
 
 @Serializable
+data class GNewsResponse(
+    val totalArticles: Int? = null,
+    val articles: List<GNewsArticle> = emptyList()
+)
+
+@Serializable
+data class GNewsArticle(
+    val title: String? = null,
+    val description: String? = null,
+    val content: String? = null,
+    val url: String? = null,
+    val image: String? = null,
+    val publishedAt: String? = null,
+    val source: Source? = null
+)
+
+@Serializable
+data class MediastackResponse(
+    val data: List<MediastackArticle> = emptyList()
+)
+
+@Serializable
+data class MediastackArticle(
+    val title: String? = null,
+    val description: String? = null,
+    val source: String? = null,
+    val url: String? = null,
+    val image: String? = null,
+    val published_at: String? = null
+)
+
+@Serializable
 data class Article(
     val source: Source? = null,
     val author: String? = null,

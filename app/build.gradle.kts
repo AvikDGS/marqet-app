@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
@@ -19,6 +22,17 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    
+    val secrets = Properties()
+    val secretsFile = rootProject.file("secrets.properties")
+    if (secretsFile.exists()) {
+      secrets.load(FileInputStream(secretsFile))
+    }
+    buildConfigField("String", "SUPABASE_URL", "\"${secrets.getProperty("SUPABASE_URL") ?: ""}\"")
+    buildConfigField("String", "SUPABASE_ANON_KEY", "\"${secrets.getProperty("SUPABASE_ANON_KEY") ?: ""}\"")
+    buildConfigField("String", "NEWS_API_KEY", "\"${secrets.getProperty("NEWS_API_KEY") ?: ""}\"")
+    buildConfigField("String", "GNEWS_API_KEY", "\"${secrets.getProperty("GNEWS_API_KEY") ?: ""}\"")
+    buildConfigField("String", "MEDIASTACK_API_KEY", "\"${secrets.getProperty("MEDIASTACK_API_KEY") ?: ""}\"")
   }
 
   signingConfigs {
@@ -97,10 +111,12 @@ dependencies {
   implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
+  implementation(libs.rome)
   implementation("io.coil-kt:coil-compose:2.6.0")
   implementation(libs.converter.moshi)
   implementation("io.github.jan-tennert.supabase:gotrue-kt:2.1.4")
   implementation("io.github.jan-tennert.supabase:postgrest-kt:2.1.4")
+  implementation("io.github.jan-tennert.supabase:realtime-kt:2.1.4")
   implementation("io.ktor:ktor-client-android:2.3.7")
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
